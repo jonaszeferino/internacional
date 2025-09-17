@@ -42,6 +42,8 @@ export default function ContadorDivida() {
   const [descricaoAlteracao, setDescricaoAlteracao] = useState("")
   const [submittingNoticia, setSubmittingNoticia] = useState(false)
   const [feedbackMessage, setFeedbackMessage] = useState("")
+  const [taxaSelic, setTaxaSelic] = useState<any>(null)
+  const [aplicandoJuros, setAplicandoJuros] = useState(false)
 
   // Função para buscar valor atual da dívida
   const fetchDividaAtual = async () => {
@@ -73,6 +75,71 @@ export default function ContadorDivida() {
       console.error("[v0] Erro ao recalcular valor:", error)
     }
     return dividaAtual
+  }
+
+  // Função para buscar taxa Selic
+  const fetchTaxaSelic = async () => {
+    try {
+      const response = await fetch("/api/selic")
+      if (response.ok) {
+        const data = await response.json()
+        console.log("[v0] Taxa Selic carregada:", data.taxa_selic_anual + "% a.a.")
+        setTaxaSelic(data)
+      }
+    } catch (error) {
+      console.error("[v0] Erro ao carregar taxa Selic:", error)
+    }
+  }
+
+  // Função para aplicar juros manualmente
+  const aplicarJuros = async () => {
+    setAplicandoJuros(true)
+    try {
+      const response = await fetch("/api/aplicar-juros", { method: "POST" })
+      const data = await response.json()
+      
+      if (data.success) {
+        setFeedbackMessage(`✅ Juros aplicados: ${new Intl.NumberFormat("pt-BR", {
+          style: "currency",
+          currency: "BRL",
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0,
+        }).format(data.juros_aplicados)}!`)
+        
+        // Recarregar dados
+        await recalcularDivida()
+        await fetchAlteracoesBanco()
+      } else if (data.ja_aplicado) {
+        setFeedbackMessage("ℹ️ Juros já foram aplicados hoje!")
+      } else {
+        setFeedbackMessage("❌ Erro ao aplicar juros")
+      }
+      
+      setTimeout(() => setFeedbackMessage(""), 5000)
+    } catch (error) {
+      console.error("[v0] Erro ao aplicar juros:", error)
+      setFeedbackMessage("❌ Erro ao aplicar juros")
+      setTimeout(() => setFeedbackMessage(""), 3000)
+    } finally {
+      setAplicandoJuros(false)
+    }
+  }
+
+  // Função para verificar juros automaticamente
+  const verificarJurosAutomatico = async () => {
+    try {
+      const response = await fetch("/api/verificar-juros")
+      const data = await response.json()
+      
+      if (data.success && !data.ja_aplicado) {
+        console.log("[v0] Juros aplicados automaticamente:", data.juros_aplicados)
+        // Recarregar dados silenciosamente
+        await recalcularDivida()
+        await fetchAlteracoesBanco()
+      }
+    } catch (error) {
+      console.error("[v0] Erro na verificação automática de juros:", error)
+    }
   }
 
   // Função para buscar alterações do banco
@@ -248,6 +315,12 @@ export default function ContadorDivida() {
       // Carregar alterações do banco
       await fetchAlteracoesBanco()
       
+      // Carregar taxa Selic
+      await fetchTaxaSelic()
+      
+      // Verificar se juros precisam ser aplicados (silenciosamente)
+      await verificarJurosAutomatico()
+      
       // Se o valor carregado é diferente do base, não animar
       if (valorAtual !== dividaBase) {
         console.log("[v0] Valor carregado diferente do base, pulando animação")
@@ -288,8 +361,16 @@ export default function ContadorDivida() {
     }).format(valor)
   }
 
-  // Função para calcular incremento por segundo (simulação)
-  const incrementoPorSegundo = Math.floor(dividaBase * 0.000001) // Aproximação de juros
+  // Função para calcular incremento por segundo baseado na Selic real
+  const calcularIncrementoPorSegundo = () => {
+    if (taxaSelic && taxaSelic.taxa_selic_diaria) {
+      // Juros por segundo = (dívida atual * taxa diária) / 86400 segundos
+      const jurosPorSegundo = (dividaAtual * taxaSelic.taxa_selic_diaria) / 86400
+      return Math.floor(jurosPorSegundo)
+    }
+    // Fallback para estimativa
+    return Math.floor(dividaBase * 0.000001)
+  }
 
   return (
     <div style={{ minHeight: '100vh', padding: '1rem' }}>
@@ -379,6 +460,52 @@ export default function ContadorDivida() {
                 >
                   📝 {submittingNoticia ? "Adicionando..." : "Adicionar Notícia"}
                 </button>
+              </div>
+
+              <div className="divider"></div>
+
+              {/* Sistema de Juros Selic */}
+              <div>
+                <h3 className="font-semibold mb-4">💹 Sistema de Juros Selic</h3>
+                {taxaSelic && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <div className="grid grid-2 gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Taxa Selic Anual:</p>
+                        <p className="text-lg font-bold text-blue-600">{taxaSelic.taxa_selic_anual}% a.a.</p>
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium">Taxa Diária:</p>
+                        <p className="text-lg font-bold text-green-600">
+                          {taxaSelic.taxa_selic_diaria_percentual?.toFixed(4)}% ao dia
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-2">
+                      <p className="text-xs text-gray-600">
+                        Fonte: {taxaSelic.fonte} | Data: {taxaSelic.data_referencia}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-4">
+                  <button
+                    onClick={aplicarJuros}
+                    disabled={aplicandoJuros}
+                    className="btn btn-primary"
+                  >
+                    {aplicandoJuros ? "Aplicando..." : "💰 Aplicar Juros de Hoje"}
+                  </button>
+                  <button
+                    onClick={fetchTaxaSelic}
+                    className="btn btn-outline"
+                  >
+                    🔄 Atualizar Taxa Selic
+                  </button>
+                </div>
+                <p className="text-sm text-gray-600 mt-2">
+                  💡 Os juros são aplicados automaticamente uma vez por dia baseados na taxa Selic
+                </p>
               </div>
 
               <div className="divider"></div>
@@ -526,7 +653,14 @@ export default function ContadorDivida() {
             </div>
             <div className="flex items-center justify-center gap-2 text-sm text-gray-600 mb-4">
               <span>📈</span>
-              <span>+{formatarReal(incrementoPorSegundo)} por segundo (estimativa)</span>
+              <span>
+                +{formatarReal(calcularIncrementoPorSegundo())} por segundo
+                {taxaSelic ? (
+                  <span className="text-blue-600 font-medium"> (Selic: {taxaSelic.taxa_selic_anual}% a.a.)</span>
+                ) : (
+                  <span> (estimativa)</span>
+                )}
+              </span>
             </div>
             <div className="badge badge-red">
               Dados aproximados - Última atualização: 17/09/2025
